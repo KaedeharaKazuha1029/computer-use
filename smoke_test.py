@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 
 class Client:
@@ -136,18 +137,54 @@ def input_contract():
     print('Negative monitor projection, exact signed W+A motion and stale sequence preflight passed.')
 
 
+def absolute_dpi_contract():
+    from windows_input import Windows
+
+    def display(x, y, width, height):
+        return SimpleNamespace(Position_x=x, Position_y=y, PelsWidth=width, PelsHeight=height)
+
+    # Display enumeration rectangles are logical on a DPI-unaware caller.
+    monitors = [(1, None, (0, 0, 1707, 1067))]
+    modes = {1: display(0, 0, 2560, 1600)}
+    backend = Windows.__new__(Windows)
+    backend.display_api = SimpleNamespace(
+        EnumDisplayMonitors=lambda: monitors,
+        GetMonitorInfo=lambda handle: {'Device': handle},
+        EnumDisplaySettings=lambda device, _mode: modes[device],
+    )
+    backend.user = SimpleNamespace(GetSystemMetrics=lambda index: dict(zip((76, 77, 78, 79), (0, 0, 1707, 1067)))[index])
+    packets = []
+    backend.send = lambda event: packets.append(event.data.mouse)
+    backend.move((1280, 800))
+    assert (packets[-1].dx, packets[-1].dy, packets[-1].dwFlags) == (32768, 32768, 0xC001)
+
+    monitors.append((2, None, (-850, -100, 0, 800)))
+    modes[2] = display(-1280, -200, 1280, 1200)
+    backend.move((-1280, -200))
+    assert (packets[-1].dx, packets[-1].dy) == (0, 0)
+    backend.move((2559, 1599))
+    assert (packets[-1].dx * 3840 // 65536, packets[-1].dy * 1800 // 65536) == (3839, 1799)
+    print('Physical absolute mouse normalization at 150% DPI and with a negative monitor origin passed.')
+
+
 def desktop(client, send_input):
     fixture_code = '''
+import ctypes
 import sys
 import win32api as api
 import win32con as c
 import win32gui as gui
+
+ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 
 def procedure(window, message, wp, lp):
     if message == c.WM_COMMAND and lp and api.HIWORD(wp) == c.EN_CHANGE:
         print(gui.GetWindowText(lp), flush=True)
     if message == c.WM_LBUTTONDOWN:
         print("clicked", flush=True)
+    if message == c.WM_LBUTTONUP:
+        x, y = gui.ClientToScreen(window, (api.LOWORD(lp), api.HIWORD(lp)))
+        print(f"released:{x}:{y}", flush=True)
     if message == c.WM_MOUSEMOVE and wp & c.MK_LBUTTON:
         print("dragged", flush=True)
     if message == c.WM_DESTROY:
@@ -255,11 +292,18 @@ def motion(client, window, region, lines):
     def physical(x, y):
         return region['originX'] + 2 * x + 1, region['originY'] + 2 * y + 1
 
+    def release_position():
+        deadline = time.monotonic() + 6
+        while True:
+            line = lines.get(timeout=max(0, deadline - time.monotonic()))
+            if line.startswith('released:'):
+                return tuple(map(int, line.split(':')[1:]))
+
     client.js('await pixelApp.click([30,25], {screenshotId:projected.id});')
     deadline = time.monotonic() + 6
     while lines.get(timeout=max(0, deadline - time.monotonic())) != 'clicked':
         pass
-    position = cursor()
+    position = release_position()
     assert position == physical(30, 25), (position, physical(30, 25), region)
     screenshot = {'coordinates': 'screenshot', 'screenshotId': region['id']}
     result = client.call('input_sequence', {'window': window, 'steps': [
@@ -268,7 +312,7 @@ def motion(client, window, region, lines):
         {'action': 'wait', 'duration_ms': 20},
     ]})
     assert not result.get('isError'), result
-    position = cursor()
+    position = release_position()
     assert position == physical(45, 25), (position, physical(45, 25))
     result = client.call('move_relative', {'window': window, 'dx': 12, 'dy': 0,
                                            'duration_ms': 220, 'steps': 6, 'key': 'W+A'})
@@ -332,6 +376,7 @@ if __name__ == '__main__':
     parser.add_argument('--desktop-input', action='store_true')
     parser.add_argument('--browser', action='store_true')
     args = parser.parse_args()
+    absolute_dpi_contract()
     input_contract()
     with Client() as client:
         general(client)

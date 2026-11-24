@@ -325,7 +325,7 @@ class Server:
             version = params.get('protocolVersion')
             self.emit(request_id, result={
                 'protocolVersion': version if version in VERSIONS else VERSIONS[0],
-                'capabilities': {'tools': {}}, 'serverInfo': {'name': 'local-cua-mcp', 'version': '0.2.0'},
+                'capabilities': {'tools': {}}, 'serverInfo': {'name': 'local-cua-mcp', 'version': '0.2.1'},
             })
         elif method == 'ping':
             self.emit(request_id, result={})

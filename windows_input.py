@@ -14,6 +14,10 @@ MAX_DURATION_MS = 60_000
 MAX_RELATIVE_STEPS = 1024
 MOVE_INTERVAL_MS = 12
 MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_VIRTUALDESK = 0x4000
+MOUSEEVENTF_ABSOLUTE = 0x8000
+ENUM_CURRENT_SETTINGS = -1
+PER_MONITOR_AWARE_V2 = -4
 SEQUENCE_ACTIONS = ('hold_key', 'move_relative', 'wait', 'drag_path', 'click_pointer')
 MODIFIERS = {
     'ctrl': 0xA2, 'lctrl': 0xA2, 'rctrl': 0xA3,
@@ -85,6 +89,9 @@ def mouse_event(flags, x=0, y=0, data=0):
 
 class Windows:
     def __init__(self):
+        import win32api
+
+        self.display_api = win32api
         self.user = ct.WinDLL('user32', use_last_error=True)
         self.dwm = ct.WinDLL('dwmapi')
         pointer = ct.c_void_p
@@ -97,7 +104,6 @@ class Windows:
             'GetWindowTextLengthW': (ct.c_int, hwnd),
             'GetWindowTextW': (ct.c_int, hwnd, wt.LPWSTR, ct.c_int),
             'GetWindowRect': (wt.BOOL, hwnd, ct.POINTER(wt.RECT)),
-            'GetSystemMetrics': (ct.c_int, ct.c_int),
             'GetAsyncKeyState': (ct.c_short, ct.c_int),
             'GetKeyboardLayout': (pointer, wt.DWORD),
             'MapVirtualKeyExW': (wt.UINT, wt.UINT, wt.UINT, pointer),
@@ -111,8 +117,12 @@ class Windows:
         self.dwm.DwmGetWindowAttribute.argtypes = [hwnd, wt.DWORD, pointer, wt.DWORD]
         self.dwm.DwmGetWindowAttribute.restype = ct.c_long
 
+    def require_physical_coordinates(self):
+        if not self.user.SetThreadDpiAwarenessContext(ct.c_void_p(PER_MONITOR_AWARE_V2)):
+            raise InputError('Windows could not enable physical coordinates for this input thread.')
+
     def inspect(self, hwnd):
-        self.user.SetThreadDpiAwarenessContext(ct.c_void_p(-4))
+        self.require_physical_coordinates()
         process_id = wt.DWORD()
         thread = self.user.GetWindowThreadProcessId(hwnd, ct.byref(process_id))
         if not thread or not self.user.IsWindow(hwnd):
@@ -141,6 +151,7 @@ class Windows:
         return current['frame']
 
     def verify_point(self, hwnd, point):
+        self.require_physical_coordinates()
         target = self.user.WindowFromPoint(wt.POINT(*point))
         if not target or self.user.GetAncestor(target, 2) != hwnd:
             raise InputError('The pointer coordinate is outside the selected window or is covered.')
@@ -164,14 +175,32 @@ class Windows:
         if self.user.SendInput(1, ct.byref(event), ct.sizeof(event)) != 1:
             raise InputError(f'Windows rejected SendInput (error {ct.get_last_error()}).')
 
+    def physical_desktop_bounds(self):
+        # The rectangles from EnumDisplayMonitors can be DPI-virtualized.
+        # Current display modes report native pixel sizes and positions.
+        api = self.display_api
+        try:
+            modes = [api.EnumDisplaySettings(api.GetMonitorInfo(monitor)['Device'], ENUM_CURRENT_SETTINGS)
+                     for monitor, _, _ in api.EnumDisplayMonitors()]
+        except api.error as exc:
+            raise InputError('Cannot read the physical Windows display layout.') from exc
+        if not modes or any(mode.PelsWidth <= 0 or mode.PelsHeight <= 0 for mode in modes):
+            raise InputError('No valid physical Windows display layout is available.')
+        left = min(mode.Position_x for mode in modes)
+        top = min(mode.Position_y for mode in modes)
+        right = max(mode.Position_x + mode.PelsWidth for mode in modes)
+        bottom = max(mode.Position_y + mode.PelsHeight for mode in modes)
+        return left, top, right - left, bottom - top
+
     def move(self, point):
-        left, top, width, height = (self.user.GetSystemMetrics(index) for index in (76, 77, 78, 79))
+        left, top, width, height = self.physical_desktop_bounds()
         x, y = point[0] - left, point[1] - top
         if not (0 <= x < width and 0 <= y < height):
             raise InputError('The pointer coordinate is off the Windows virtual desktop.')
         absolute_x = (x * 65_536 + width - 1) // width
         absolute_y = (y * 65_536 + height - 1) // height
-        self.send(mouse_event(0xC001, absolute_x, absolute_y))
+        flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_ABSOLUTE
+        self.send(mouse_event(flags, absolute_x, absolute_y))
 
     def move_relative(self, dx, dy):
         self.send(mouse_event(MOUSEEVENTF_MOVE, dx, dy))
