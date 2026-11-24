@@ -1,0 +1,17 @@
+{
+  "mcp": {
+    "servers": {
+      "local-cua": {
+        "type": "local",
+        "command": [
+          "C:/Path/to/python.exe",
+          "-B",
+          "C:/Path/to/computer-use/server.py",
+          "--node",
+          "C:/Program Files/nodejs/node.exe"
+        ],
+        "codemode": false
+      }
+    }
+  }
+}

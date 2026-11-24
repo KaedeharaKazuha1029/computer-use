@@ -1,0 +1,7 @@
+comtypes>=1.4.10; platform_system == "Windows"
+jsonschema>=4.22
+Pillow>=11.2
+playwright>=1.56
+psutil>=6; platform_system == "Windows"
+pywin32>=308; platform_system == "Windows"
+uiautomation>=2.0.29; platform_system == "Windows"

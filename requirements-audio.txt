@@ -1,0 +1,2 @@
+numpy>=2
+PyAudioWPatch>=0.2.12.7; platform_system == "Windows"
